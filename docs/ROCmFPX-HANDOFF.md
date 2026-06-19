@@ -1,31 +1,32 @@
 # ROCmFPX Handoff
 
-This branch is the handoff package for the experimental ROCmFPX family.
+This is the working handoff for the experimental ROCmFPX branch. It is written
+for the next reviewer or agent that needs to continue the family without
+reconstructing the intent from commit history.
 
-The implementation work was developed in the llama.cpp experiment tree at:
+## What This Branch Is
 
-```text
-/home/caf/strix-fp4/llama.cpp-mtp-rocmfp4
-```
-
-The current local implementation branch there is:
-
-```text
-experimental-rocmfpx-branch
-```
-
-## What ROCmFPX Is
-
-ROCmFPX is a model-weight quantization family that sits beside ROCmFP4. It is
-not a new K/V-only compression layer. The model-file presets are:
+ROCmFPX is a model-weight quantization family that sits beside ROCmFP4 in this
+tree. It is not a new K/V-only compression layer. The model-file presets are:
 
 - `Q3_0_ROCMFPX`
 - `Q6_0_ROCMFPX`
 - `Q8_0_ROCMFPX`
 
-The ROCmFP4 path remains the reference for block shape, scale discipline,
-kernel coverage, and dequant semantics. K/V cache flags remain runtime settings
-in llama.cpp and should not be treated as model quant formats.
+The ROCmFP4 path stays the reference for block shape, scale discipline, kernel
+coverage, and dequant semantics. K/V cache flags remain runtime settings in
+llama.cpp and should not be treated as model quant formats.
+
+## Current Branch State
+
+The local experimental branch carries:
+
+- ROCmFPX format docs and validation notes
+- agent-oriented quant wrapper scripts
+- agentic smoke tests for chat, coding, JSON, tool-call, coherency, and stream
+- ROCmFP4 and ROCmFPX cache handling adjustments
+- the K-cache coherency guard that promotes fp3 K cache to a safer higher-bit
+  type at runtime
 
 ## Family Contract
 
@@ -35,8 +36,7 @@ Keep these rules stable unless a test proves otherwise:
 - Use finite unsigned UE4M3 scale bytes.
 - Reject invalid scale bytes such as `0x7f` and sign-bit scale bytes.
 - Use explicit integer-code-times-decoded-scale dequant math.
-- Treat ROCmFP4 as the kernel/quant template, not as a separate inference
-  stack.
+- Treat ROCmFP4 as the kernel/quant template, not as a separate inference stack.
 - Preserve normal llama.cpp runtime features:
   MTP, EAGLE3, speculative decoding, RoPE/attention scaling, and tool calling.
 
@@ -81,7 +81,8 @@ still matter at runtime.
 - `common/common.cpp` promotes `-ctk q3_0_rocmfpx` to `q6_0_rocmfpx` and logs a
   warning.
 
-This is a coherency safeguard, not a new compression scheme.
+This is a coherency safeguard, not a new compression scheme. It keeps fp3 K
+cache above the observed tool-call / agent floor.
 
 ## How To Build
 
@@ -160,8 +161,9 @@ It validates:
 - three-bullet coherency summary
 - streaming protocol
 
-The script refuses to start if ROCm already reports an active KFD process, and
-it idles briefly before loading the next model.
+The script now refuses to start if ROCm already reports an active KFD process,
+and it idles briefly before loading the next model. That was added to make
+“clear VRAM before each test” a concrete rule instead of a memory-based one.
 
 ## Observed Local Results
 
