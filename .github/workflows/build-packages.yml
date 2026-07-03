@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - master
+      - main
     paths: [
       '.github/workflows/build-packages.yml',
       '**/CMakeLists.txt',
@@ -53,7 +53,7 @@ jobs:
           key: windows-x64-msvc-vulkan
           variant: ccache
           evict-old-files: 1d
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/master' }}
+          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
 
       - name: Install Vulkan SDK
         id: get_vulkan
