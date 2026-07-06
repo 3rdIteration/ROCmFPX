@@ -546,8 +546,16 @@ kv_ssd_cache* kv_ssd_init(const char* path, const kv_ssd_config* cfg, uint64_t c
     if (c->config.auto_size) {
         size_t avail = get_available_ram();
         size_t usable = (size_t)((double)avail * (1.0 - c->config.memory_reserve));
-        c->config.hot_ram_bytes = (usable * 3) / 4;
-        c->config.warm_ram_bytes = usable / 4;
+        // The RAM tiers only save a disk read on restore — the checkpoint is
+        // always durable on disk. Cap them instead of claiming most of free
+        // RAM: on unified-memory machines (e.g. Strix Halo) host RAM, "VRAM"
+        // and these tiers all drain the same physical pool, so a large tier
+        // directly starves the KV cache and prefill staging buffers.
+        // Explicit -ssd-hot-ram / -ssd-warm-ram override auto-sizing.
+        const size_t MAX_HOT  = 1024ULL * 1024 * 1024;
+        const size_t MAX_WARM =  512ULL * 1024 * 1024;
+        c->config.hot_ram_bytes  = std::min(MAX_HOT,  (usable * 3) / 4);
+        c->config.warm_ram_bytes = std::min(MAX_WARM, usable / 4);
         const size_t MIN_HOT  = 512ULL * 1024 * 1024;
         const size_t MIN_WARM = 256ULL * 1024 * 1024;
         bool boosted = false;
