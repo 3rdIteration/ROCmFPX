@@ -326,6 +326,67 @@ The server includes a set of built-in tools that enable the LLM to access the lo
 
 To use this feature, start the server with `--tools all`. You can also enable only specific tools by passing a comma-separated list: `--tools name1,name2,...`. Run `--help` for the full list of available tool names.
 
+## SSD-backed KV cache
+
+Passing `--cache-ssd PATH` persists KV cache checkpoints to disk so a
+conversation survives server restarts: on the next request with a
+matching prompt prefix, the server restores the KV state from disk and
+only reprocesses the tail instead of the whole prompt.
+
+Checkpoints move through three tiers:
+
+- **hot** - a copy kept in RAM for instant re-restore
+- **warm** - RAM parking for demoted hot entries
+- **cold** - on disk only (always; disk is the durable copy)
+
+| Argument | Explanation |
+| -------- | ----------- |
+| `-ssd, --cache-ssd PATH` | enable the cache, storing checkpoints under PATH |
+| `-ssd-cp, --cache-ssd-checkpoints N` | max checkpoints per slot (default: 64) |
+| `-ssd-hot-ram, --cache-ssd-hot-ram N` | hot tier RAM budget in MiB (default: auto) |
+| `-ssd-warm-ram, --cache-ssd-warm-ram N` | warm tier RAM budget in MiB (default: auto) |
+| `-ssd-mc, --cache-ssd-max-cold N` | max cold checkpoints before oldest-first eviction (default: unlimited) |
+| `--cache-ssd-max-conversations N` | max conversation directories kept on disk (default: 16) |
+| `--cache-ssd-system-prompts N` | max system prompts cached for reuse across conversations (default: 8) |
+| `-ssd-ps, --cache-ssd-page-size N` | tokens per page: 512, 1024 or 2048 (default: 1024) |
+| `--cache-ssd-no-fsync` | skip fsync on checkpoint writes (faster, may lose the last checkpoint on power loss) |
+
+Checkpoint size scales with context depth: a 122B MoE at ~50k tokens of
+q8_0 KV produces ~1-1.5 GiB per checkpoint. Use `--cache-ssd-max-cold`
+to bound disk growth.
+
+### Unified-memory machines (Strix Halo and similar)
+
+The hot/warm auto-sizer assumes host RAM and GPU memory are separate
+pools, which holds for discrete GPUs and traditional APUs with a small
+fixed carve-out. On unified-memory machines like the Ryzen AI Max
+("Strix Halo"), the BIOS carve-out can dedicate most of the physical
+RAM to the iGPU - a 128 GB machine may leave Windows only 32 GB of
+host RAM - and "VRAM", host RAM and the hot/warm tiers all drain that
+same silicon.
+
+On such machines a large RAM tier is pure overhead: it duplicates data
+that is already on disk, and every MiB it holds is taken from the KV
+cache, prefill staging buffers and the checkpoint serialization spikes
+(which need transient host memory roughly equal to one full checkpoint).
+The only thing the tiers buy is skipping an NVMe read on restore -
+around a second for even the largest checkpoints, versus minutes of
+prompt reprocessing that the disk copy already saves you.
+
+Suggested values for unified-memory machines:
+
+```
+--cache-ssd-hot-ram 256 --cache-ssd-warm-ram 128
+```
+
+Checkpoints larger than the hot budget skip RAM retention entirely and
+go straight to disk, so at long contexts these small budgets cost
+nothing. If the host has plenty of headroom (small carve-out, short
+contexts, many small conversations), `512`/`256` keeps the fast path
+for more of them. The auto-sizer itself is capped at 1 GiB hot /
+512 MiB warm and scales down when free RAM is low, so leaving the
+flags unset is safe - just not optimal - on unified memory.
+
 ## User Isolation
 
 `llama-server` carries a first-class `user_id` that, when set on a request,
