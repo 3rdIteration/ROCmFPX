@@ -8,6 +8,7 @@
 #include "server-task.h"
 #include "llama.h"
 
+#include <cinttypes>
 #include <vector>
 
 namespace llama {
@@ -22,39 +23,49 @@ uint64_t server_ssd_cache::store(uint32_t slot_id,
 {
     if (!cache_ || !ctx || !ckpt.data_tgt.data()) return 0;
 
-    // Serialize full tgt state (recurrent + KV cache) for cold-start recovery.
-    const size_t tgt_size = llama_state_seq_get_size_ext(ctx, slot_id, 0);
-    std::vector<uint8_t> tgt_data(tgt_size);
-    if (llama_state_seq_get_data_ext(ctx, tgt_data.data(), tgt_size, slot_id, 0) != tgt_size) {
-        LOG_WRN("SSD cache: tgt state serialization size mismatch (slot=%u)\n", slot_id);
-        return 0;
-    }
+    // The full-state serialization below allocates host buffers proportional
+    // to the sequence length (hundreds of MiB at long contexts). On machines
+    // where most RAM is carved out for the iGPU this can fail — skip the
+    // store instead of dying on an uncaught bad_alloc.
+    try {
+        // Serialize full tgt state (recurrent + KV cache) for cold-start recovery.
+        const size_t tgt_size = llama_state_seq_get_size_ext(ctx, slot_id, 0);
+        std::vector<uint8_t> tgt_data(tgt_size);
+        if (llama_state_seq_get_data_ext(ctx, tgt_data.data(), tgt_size, slot_id, 0) != tgt_size) {
+            LOG_WRN("SSD cache: tgt state serialization size mismatch (slot=%u)\n", slot_id);
+            return 0;
+        }
 
-    // Serialize dft state (MTP KV cache) when ctx_dft has independent memory.
-    // Skip when ctx_dft is null or shares memory with ctx (is_mem_shared models).
-    std::vector<uint8_t> dft_data;
-    if (ctx_dft) {
-        const size_t dft_size = llama_state_seq_get_size_ext(ctx_dft, slot_id, 0);
-        if (dft_size > 0) {
-            dft_data.resize(dft_size);
-            if (llama_state_seq_get_data_ext(ctx_dft, dft_data.data(), dft_size, slot_id, 0) != dft_size) {
-                LOG_WRN("SSD cache: dft state serialization size mismatch (slot=%u) - skipping\n", slot_id);
-                dft_data.clear();
+        // Serialize dft state (MTP KV cache) when ctx_dft has independent memory.
+        // Skip when ctx_dft is null or shares memory with ctx (is_mem_shared models).
+        std::vector<uint8_t> dft_data;
+        if (ctx_dft) {
+            const size_t dft_size = llama_state_seq_get_size_ext(ctx_dft, slot_id, 0);
+            if (dft_size > 0) {
+                dft_data.resize(dft_size);
+                if (llama_state_seq_get_data_ext(ctx_dft, dft_data.data(), dft_size, slot_id, 0) != dft_size) {
+                    LOG_WRN("SSD cache: dft state serialization size mismatch (slot=%u) - skipping\n", slot_id);
+                    dft_data.clear();
+                }
             }
         }
+
+        // spec_data carries speculative impl state (pending_h for MTP, boundary stash for Eagle3).
+        const std::vector<uint8_t>& spec_data = ckpt.data_spec;
+
+        return kv_ssd_store(cache_, slot_id,
+                            tgt_data.data(), tgt_data.size(),
+                            ckpt.pos_min, ckpt.pos_max,
+                            ckpt.n_tokens, turn_id,
+                            (const uint32_t*)tokens, tokens_size,
+                            cache_->compat_hash,
+                            dft_data.empty()  ? nullptr : dft_data.data(),  dft_data.size(),
+                            spec_data.empty() ? nullptr : spec_data.data(), spec_data.size());
+    } catch (const std::bad_alloc &) {
+        LOG_WRN("SSD cache: out of host memory serializing checkpoint (slot=%u, n_tokens=%" PRId64 ") - skipping store\n",
+                slot_id, ckpt.n_tokens);
+        return 0;
     }
-
-    // spec_data carries speculative impl state (pending_h for MTP, boundary stash for Eagle3).
-    const std::vector<uint8_t>& spec_data = ckpt.data_spec;
-
-    return kv_ssd_store(cache_, slot_id,
-                        tgt_data.data(), tgt_data.size(),
-                        ckpt.pos_min, ckpt.pos_max,
-                        ckpt.n_tokens, turn_id,
-                        (const uint32_t*)tokens, tokens_size,
-                        cache_->compat_hash,
-                        dft_data.empty()  ? nullptr : dft_data.data(),  dft_data.size(),
-                        spec_data.empty() ? nullptr : spec_data.data(), spec_data.size());
 }
 
 bool server_ssd_cache::load(uint64_t checkpoint_id,
@@ -78,7 +89,13 @@ bool server_ssd_cache::load(uint64_t checkpoint_id,
     std::vector<uint8_t> tgt_data;
     std::vector<uint8_t> dft_data;
     std::vector<uint8_t> spec_data;
-    if (!kv_ssd_load(cache_, checkpoint_id, tgt_data, &dft_data, &spec_data)) return false;
+    try {
+        if (!kv_ssd_load(cache_, checkpoint_id, tgt_data, &dft_data, &spec_data)) return false;
+    } catch (const std::bad_alloc &) {
+        LOG_WRN("SSD cache: out of host memory loading checkpoint %lu - falling back to prompt reprocessing\n",
+                (unsigned long)checkpoint_id);
+        return false;
+    }
 
     // Restore tgt state (recurrent + KV cache) under the current slot's seq_id
     if (llama_state_seq_set_data_ext(ctx, tgt_data.data(), tgt_data.size(), (int32_t)seq_id, 0) == 0) {

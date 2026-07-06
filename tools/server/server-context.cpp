@@ -2086,32 +2086,40 @@ private:
             slot.prompt.checkpoints.erase(slot.prompt.checkpoints.begin());
         }
 
-        auto & cur = slot.prompt.checkpoints.emplace_back();
+        // Checkpoint creation allocates buffers proportional to the sequence
+        // length. Treat allocation failure as "no checkpoint" instead of
+        // letting bad_alloc terminate the server mid-prefill.
+        try {
+            auto & cur = slot.prompt.checkpoints.emplace_back();
 
-        // [TAG_CHECKPOINTS_FIX_POS_MIN]
-        // TODO: here we incorrectly deterimne that the saved checkpoint data covers the [pos_min, pos_max] range
-        //       this is not true for SWA models: https://github.com/ggml-org/llama.cpp/pull/24411#issuecomment-4677983225
-        cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
+            // [TAG_CHECKPOINTS_FIX_POS_MIN]
+            // TODO: here we incorrectly deterimne that the saved checkpoint data covers the [pos_min, pos_max] range
+            //       this is not true for SWA models: https://github.com/ggml-org/llama.cpp/pull/24411#issuecomment-4677983225
+            cur.update_pos(slot.prompt.n_tokens() - n_tokens_cur, pos_min, pos_max);
 
-        cur.update_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
-        cur.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
-        // stash the draft's speculative state with the checkpoint
-        common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
+            cur.update_tgt(ctx_tgt,       slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+            cur.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY | LLAMA_STATE_SEQ_FLAGS_ON_DEVICE);
+            // stash the draft's speculative state with the checkpoint
+            common_speculative_get_state(spec.get(), slot.id, cur.data_spec);
 
-        SLT_INF(slot,
-                "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
-                (int) slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints, cur.pos_min,
-                cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
+            SLT_INF(slot,
+                    "created context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                    (int) slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints, cur.pos_min,
+                    cur.pos_max, cur.n_tokens, (float) cur.size() / 1024 / 1024);
 
-        // SSD-backed KV cache: store checkpoint on disk
-        if (ssd_page_manager) {
-            const auto & prefix_tokens = slot.prompt.tokens;
-            ssd_page_manager->store_checkpoint_with_tokens(
-                slot.id, ctx_tgt, ctx_dft.get(), cur,
-                prefix_tokens.get_tokens().data(),
-                prefix_tokens.get_tokens().size(),
-                ssd_turn_counter, slot.conv_hash,
-                slot.task ? slot.task->user_id : std::string());
+            // SSD-backed KV cache: store checkpoint on disk
+            if (ssd_page_manager) {
+                const auto & prefix_tokens = slot.prompt.tokens;
+                ssd_page_manager->store_checkpoint_with_tokens(
+                    slot.id, ctx_tgt, ctx_dft.get(), cur,
+                    prefix_tokens.get_tokens().data(),
+                    prefix_tokens.get_tokens().size(),
+                    ssd_turn_counter, slot.conv_hash,
+                    slot.task ? slot.task->user_id : std::string());
+            }
+        } catch (const std::bad_alloc &) {
+            slot.prompt.checkpoints.pop_back();
+            SLT_WRN(slot, "%s", "out of host memory creating context checkpoint - skipping\n");
         }
     }
 
@@ -2140,26 +2148,34 @@ private:
         while (slot.prompt.checkpoints.size() >= (size_t)params_base.n_ctx_checkpoints) {
             slot.prompt.checkpoints.erase(slot.prompt.checkpoints.begin());
         }
-        auto & cur = slot.prompt.checkpoints.emplace_back();
 
-        cur.update_pos(done_n_tokens, done_pos_min, done_pos_max);
-        cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-        cur.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+        // The final checkpoint serializes the full prompt state into host
+        // memory; on OOM skip it rather than crashing after generation began.
+        try {
+            auto & cur = slot.prompt.checkpoints.emplace_back();
 
-        SLT_INF(slot,
-                "created final context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
-                (int)slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints,
-                cur.pos_min, cur.pos_max, cur.n_tokens,
-                (float)cur.size() / 1024 / 1024);
+            cur.update_pos(done_n_tokens, done_pos_min, done_pos_max);
+            cur.update_tgt(ctx_tgt, slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+            cur.update_dft(ctx_dft.get(), slot.id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
 
-        if (ssd_page_manager) {
-            const auto & prefix_tokens = slot.task
-                ? slot.task->tokens.get_tokens()
-                : slot.prompt.tokens.get_tokens();
-            ssd_page_manager->store_checkpoint_with_tokens(
-                slot.id, ctx_tgt, ctx_dft.get(), cur, prefix_tokens.data(),
-                prefix_tokens.size(), ssd_turn_counter, slot.conv_hash,
-                slot.task ? slot.task->user_id : std::string());
+            SLT_INF(slot,
+                    "created final context checkpoint %d of %d (pos_min = %d, pos_max = %d, n_tokens = %" PRId64 ", size = %.3f MiB)\n",
+                    (int)slot.prompt.checkpoints.size(), params_base.n_ctx_checkpoints,
+                    cur.pos_min, cur.pos_max, cur.n_tokens,
+                    (float)cur.size() / 1024 / 1024);
+
+            if (ssd_page_manager) {
+                const auto & prefix_tokens = slot.task
+                    ? slot.task->tokens.get_tokens()
+                    : slot.prompt.tokens.get_tokens();
+                ssd_page_manager->store_checkpoint_with_tokens(
+                    slot.id, ctx_tgt, ctx_dft.get(), cur, prefix_tokens.data(),
+                    prefix_tokens.size(), ssd_turn_counter, slot.conv_hash,
+                    slot.task ? slot.task->user_id : std::string());
+            }
+        } catch (const std::bad_alloc &) {
+            slot.prompt.checkpoints.pop_back();
+            SLT_WRN(slot, "%s", "out of host memory creating final context checkpoint - skipping\n");
         }
     }
 
