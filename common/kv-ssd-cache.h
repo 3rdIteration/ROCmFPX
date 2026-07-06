@@ -32,6 +32,7 @@ struct kv_ssd_config {
     int warm_turns           = 4;   // Demote warm->cold after N turns inactive
     size_t hot_window_tokens = 4096; // Recent tokens always kept hot
     bool auto_size           = true;
+    bool unified_memory      = false; // iGPU/UMA system: cap auto-sized tiers (RAM shares the pool with "VRAM")
     int max_cold_checkpoints = 32;  // Max checkpoints per model (ring buffer cap)
     float memory_reserve     = 0.15f;
     bool no_fsync            = false; // Skip fsync on write (faster, may lose last checkpoint on crash)

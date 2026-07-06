@@ -383,9 +383,16 @@ Checkpoints larger than the hot budget skip RAM retention entirely and
 go straight to disk, so at long contexts these small budgets cost
 nothing. If the host has plenty of headroom (small carve-out, short
 contexts, many small conversations), `512`/`256` keeps the fast path
-for more of them. The auto-sizer itself is capped at 1 GiB hot /
-512 MiB warm and scales down when free RAM is low, so leaving the
-flags unset is safe - just not optimal - on unified memory.
+for more of them.
+
+The server detects unified-memory systems automatically (an integrated
+GPU with no discrete GPU present) and caps the auto-sizer at 1 GiB hot
+/ 512 MiB warm there, logging
+`SSD cache: unified-memory (iGPU) system detected` at startup. On
+machines with a discrete GPU the auto-sizer keeps its original
+behavior and scales the tiers with free host RAM. Explicit
+`-ssd-hot-ram` / `-ssd-warm-ram` values always win over auto-sizing
+on either kind of machine.
 
 ## User Isolation
 

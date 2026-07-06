@@ -1064,11 +1064,29 @@ private:
 
         // SSD-backed KV cache initialization
         if (!params_base.cache_ssd_path.empty()) {
+            // Unified-memory detection: an integrated GPU with no discrete
+            // GPU present means "VRAM", host RAM and the cache tiers all
+            // share one physical pool (e.g. Strix Halo carve-outs), so the
+            // auto-sizer gets conservative caps there. A machine with both
+            // an iGPU and a dGPU is treated as discrete (the model normally
+            // runs on the dGPU and host RAM is a separate pool).
+            const bool unified_memory =
+                ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU) != nullptr &&
+                ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)  == nullptr;
+            if (unified_memory) {
+                SRV_INF("%s", "SSD cache: unified-memory (iGPU) system detected - RAM tier auto-sizing will be capped\n");
+            }
+
             llama::kv_eviction_config cfg;
+            cfg.unified_memory = unified_memory;
+            // Explicit tier budgets disable auto-sizing (which would
+            // otherwise overwrite them); an unset flag falls back to
+            // 1 GiB hot / 512 MiB warm when the other one is given.
+            cfg.auto_size = params_base.cache_ssd_hot_ram_mib <= 0 && params_base.cache_ssd_warm_ram_mib <= 0;
             cfg.max_hot_bytes  = params_base.cache_ssd_hot_ram_mib > 0
-                ? (size_t)params_base.cache_ssd_hot_ram_mib * 1024 * 1024 : 6ULL * 1024 * 1024;
+                ? (size_t)params_base.cache_ssd_hot_ram_mib * 1024 * 1024 : 1024ULL * 1024 * 1024;
             cfg.max_warm_bytes = params_base.cache_ssd_warm_ram_mib > 0
-                ? (size_t)params_base.cache_ssd_warm_ram_mib * 1024 * 1024 : 2ULL * 1024 * 1024;
+                ? (size_t)params_base.cache_ssd_warm_ram_mib * 1024 * 1024 : 512ULL * 1024 * 1024;
             cfg.hot_window_tokens = params_base.cache_ssd_hot_window_tokens;
             cfg.warm_window_tokens = params_base.cache_ssd_warm_window_tokens;
             cfg.page_size_tokens = params_base.cache_ssd_page_size_tokens;

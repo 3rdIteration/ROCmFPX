@@ -82,15 +82,16 @@ struct kv_eviction_config {
     int turn_inactivity_threshold = 2;    // Evict after N turns without access
     
     // Memory limits
-    size_t max_hot_bytes = 6ULL * 1024 * 1024;  // Max RAM for hot cache (6GB default)
-    size_t max_warm_bytes = 2ULL * 1024 * 1024;  // Max RAM for warm cache (2GB)
-    
+    size_t max_hot_bytes = 6ULL * 1024 * 1024 * 1024;  // Max RAM for hot cache (6GB default)
+    size_t max_warm_bytes = 2ULL * 1024 * 1024 * 1024;  // Max RAM for warm cache (2GB)
+
     // Page size
     size_t page_size_tokens = 1024;       // Default 1024 tokens per page
-    
+
     // Auto-sizing
     bool auto_size = true;               // Automatically adjust based on available memory
     float memory_reserve = 0.15f;        // Keep 15% RAM free for system
+    bool unified_memory = false;         // iGPU/UMA system: RAM tiers share the pool with "VRAM", keep them small
     
     // Cold cache limits
     int max_cold_checkpoints = 0;        // Max cold tier entries (0=unlimited)

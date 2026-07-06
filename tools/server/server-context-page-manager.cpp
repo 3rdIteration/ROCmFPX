@@ -48,6 +48,7 @@ server_context_page_manager::server_context_page_manager(
         ssd_cfg.hot_turns = cfg->turn_inactivity_threshold > 0 ? cfg->turn_inactivity_threshold : 2;
         ssd_cfg.warm_turns = cfg->turn_inactivity_threshold > 0 ? cfg->turn_inactivity_threshold * 2 : 4;
         ssd_cfg.auto_size = cfg->auto_size;
+        ssd_cfg.unified_memory = cfg->unified_memory;
         ssd_cfg.max_cold_checkpoints = cfg->max_cold_checkpoints;
         ssd_cfg.memory_reserve = cfg->memory_reserve;
     }
