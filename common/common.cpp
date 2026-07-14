@@ -379,7 +379,11 @@ void common_init() {
     // Default GPU_MAX_HW_QUEUES to 1 on HIP builds when the user has not set it;
     // an explicit value is always respected.
     if (!std::getenv("GPU_MAX_HW_QUEUES")) {
+#if defined(_WIN32)
+        _putenv_s("GPU_MAX_HW_QUEUES", "1");
+#else
         setenv("GPU_MAX_HW_QUEUES", "1", 0);
+#endif
     }
 #endif
 }
@@ -1323,6 +1327,20 @@ common_init_result_ptr common_init_from_params(common_params & params) {
     if (model == NULL) {
         LOG_ERR("%s: failed to load model '%s'\n", __func__, params.model.path.c_str());
         return res;
+    }
+
+    // QAT models (Google Gemma etc.) ship as Q4_0 and run at full quality on this build, but only
+    // reach their speed with GPU offload + FlashAttention. Nudge users who loaded one onto CPU.
+    if (params.n_gpu_layers == 0) {
+        char name_buf[256] = {0};
+        llama_model_meta_val_str(model, "general.name", name_buf, sizeof(name_buf));
+        std::string tag = std::string(name_buf) + " " + params.model.path;
+        std::transform(tag.begin(), tag.end(), tag.begin(),
+                       [](char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; });
+        if (tag.find("qat") != std::string::npos) {
+            LOG_WRN("%s: QAT model detected but running on CPU (-ngl 0). For full speed on this build, "
+                    "add '-ngl 999 -fa on' (measured ~2x decode on Gemma QAT).\n", __func__);
+        }
     }
 
     llama_context * lctx = res->context();
