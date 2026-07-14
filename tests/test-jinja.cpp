@@ -1326,6 +1326,25 @@ static void test_string_methods(testing & t) {
         "bXnXna"
     );
 
+    test_template(t, "string.format() auto positional",
+        "{{ '<hy_eos{}>'.format(s) }}",
+        {{"s", ":opensource"}},
+        "<hy_eos:opensource>"
+    );
+
+    test_template(t, "string.format() explicit positional and escapes",
+        "{{ '{{{1}}} {0}{0}'.format(a, n) }}",
+        {{"a", "a"}, {"n", 7}},
+        "{7} aa"
+    );
+
+    // regression: an out-of-range base must not reach MSVC strtol (CRT fastfail)
+    test_template(t, "string.int() with out-of-range base",
+        "{{ s.int(base=999) }}",
+        {{"s", "42"}},
+        "0"
+    );
+
     test_template(t, "undefined|capitalize",
         "{{ arr|capitalize }}",
         json::object(),
