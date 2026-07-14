@@ -1015,11 +1015,40 @@ static size_t ggml_backend_cuda_buffer_type_get_alloc_size(ggml_backend_buffer_t
     GGML_UNUSED(buft);
 }
 
+static size_t ggml_backend_cuda_buffer_type_get_max_size(ggml_backend_buffer_type_t buft) {
+    GGML_UNUSED(buft);
+
+    // Bound the size of a single backend buffer (one cudaMalloc/hipMalloc). When
+    // this is smaller than the total weights on a device, the model loader
+    // (ggml-alloc) splits them into several buffers of at most this size instead
+    // of one giant allocation. This matters on HIP/Windows: that stack has no
+    // VMM and hipMallocManaged is unsupported, so a single very large hipMalloc
+    // can fail with out-of-memory even when plenty of memory is free (e.g. an
+    // ~80 GiB model on a Strix Halo APU). The Vulkan backend avoids the same
+    // problem with its suballocation block size.
+    if (const char * env = getenv("GGML_CUDA_MAX_BUFFER_SIZE")) {
+        char * end = nullptr;
+        const unsigned long long v = strtoull(env, &end, 10);
+        if (end != env && v > 0) {
+            return (size_t) v;
+        }
+    }
+
+#if defined(GGML_USE_HIP) && defined(_WIN32)
+    // Default cap for HIP on Windows. 1 GiB matches the block size the Vulkan
+    // backend uses successfully on the same hardware. Override with the env var
+    // above (0/unset elsewhere keeps the unlimited default).
+    return (size_t) 1024 * 1024 * 1024;
+#else
+    return SIZE_MAX;
+#endif
+}
+
 static const ggml_backend_buffer_type_i ggml_backend_cuda_buffer_type_interface = {
     /* .get_name         = */ ggml_backend_cuda_buffer_type_get_name,
     /* .alloc_buffer     = */ ggml_backend_cuda_buffer_type_alloc_buffer,
     /* .get_alignment    = */ ggml_backend_cuda_buffer_type_get_alignment,
-    /* .get_max_size     = */ NULL, // defaults to SIZE_MAX
+    /* .get_max_size     = */ ggml_backend_cuda_buffer_type_get_max_size,
     /* .get_alloc_size   = */ ggml_backend_cuda_buffer_type_get_alloc_size,
     /* .is_host          = */ NULL,
 };
