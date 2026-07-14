@@ -713,6 +713,69 @@ const func_builtins & value_string_t::get_builtins() const {
             result->reverse();
             return result;
         }},
+        {"format", [](const func_args & args) -> value {
+            // Python-style str.format() supporting auto ({}) and explicit ({0})
+            // positional placeholders plus {{ / }} escapes. Keyword fields and
+            // format specs (e.g. {x}, {:>8}) are not implemented.
+            value val_input = args.get_pos(0);
+            if (!is_val<value_string>(val_input)) {
+                throw raised_exception("format() first argument must be a string");
+            }
+            const std::string fmt = val_input->as_string().str();
+            std::string out;
+            out.reserve(fmt.size());
+            size_t auto_idx = 0;
+            for (size_t i = 0; i < fmt.size(); ++i) {
+                const char c = fmt[i];
+                if (c == '{') {
+                    if (i + 1 < fmt.size() && fmt[i + 1] == '{') {
+                        out += '{';
+                        ++i;
+                        continue;
+                    }
+                    const size_t end = fmt.find('}', i + 1);
+                    if (end == std::string::npos) {
+                        throw raised_exception("format() has an unmatched '{' in the format string");
+                    }
+                    const std::string field = fmt.substr(i + 1, end - i - 1);
+                    size_t arg_idx = 0;
+                    bool is_index = !field.empty();
+                    for (const char fc : field) {
+                        if (fc < '0' || fc > '9') {
+                            is_index = false;
+                            break;
+                        }
+                    }
+                    if (field.empty()) {
+                        arg_idx = auto_idx++;
+                    } else if (is_index) {
+                        if (field.size() > 6) {
+                            throw raised_exception("format() positional index is out of range");
+                        }
+                        arg_idx = (size_t) std::stoul(field);
+                    } else {
+                        throw not_implemented_exception("String format only supports positional {} or {N} placeholders");
+                    }
+                    if (arg_idx + 1 >= args.count()) {
+                        throw raised_exception("format() is missing a positional argument");
+                    }
+                    out += args.get_pos(arg_idx + 1)->as_string().str();
+                    i = end;
+                } else if (c == '}') {
+                    if (i + 1 < fmt.size() && fmt[i + 1] == '}') {
+                        out += '}';
+                        ++i;
+                        continue;
+                    }
+                    throw raised_exception("format() has an unmatched '}' in the format string");
+                } else {
+                    out += c;
+                }
+            }
+            auto res = mk_val<value_string>(out);
+            res->val_str.mark_input_based_on(args.get_pos(0)->val_str);
+            return res;
+        }},
         {"replace", [](const func_args & args) -> value {
             args.ensure_vals<value_string, value_string, value_string, value_int>(true, true, true, false);
             std::string str = args.get_pos(0)->as_string().str();
@@ -740,6 +803,12 @@ const func_builtins & value_string_t::get_builtins() const {
                 throw raised_exception("int() first argument must be a string");
             }
             std::string str = val_input->as_string().str();
+            if (base != 0 && (base < 2 || base > 36)) {
+                // an out-of-range base makes MSVC's strtol raise the CRT
+                // invalid-parameter handler (fastfail) instead of throwing —
+                // treat it like any other conversion failure
+                return mk_val<value_int>(val_default->is_undefined() ? 0 : val_default->as_int());
+            }
             try {
                 return mk_val<value_int>(std::stoi(str, nullptr, base));
             } catch (...) {
@@ -1220,6 +1289,7 @@ const func_builtins & value_undefined_t::get_builtins() const {
         {"default", default_value},
         {"capitalize", empty_value_fn<value_string>},
         {"first", empty_value_fn<value_undefined>},
+        {"format", empty_value_fn<value_string>},
         {"items", empty_value_fn<value_array>},
         {"join", empty_value_fn<value_string>},
         {"last", empty_value_fn<value_undefined>},
