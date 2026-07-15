@@ -1340,6 +1340,42 @@ float16_t dequantFuncROCMFP4Fast(const in decodeBufROCMFP4Fast bl, const in uint
 }
 #endif
 
+#if defined(DATA_A_ROCMFPX_FP2)
+layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFPXFP2 {
+   block_rocmfpx_fp2 block;
+};
+
+int rocmfpx_cm2_fp2_decode(uint code)
+{
+    return int(kvalues_rocmfpx_fp2_const[code & 3u]);
+}
+
+float16_t dequantFuncROCMFPXFP2(const in decodeBufROCMFPXFP2 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const float d = ue4m3_to_fp32(bl.block.e[idx >= 16u ? 1u : 0u]);
+    const uint code = (uint(bl.block.qs[idx >> 2u]) >> (2u * (idx & 3u))) & 3u;
+    return float16_t(float(rocmfpx_cm2_fp2_decode(code)) * d);
+}
+
+int32_t rocmfpx_cm2_fp2_pack4_window(const in decodeBufROCMFPXFP2 bl, uint idx)
+{
+    const uint b = uint(bl.block.qs[idx >> 2u]);
+    return pack32(i8vec4(kvalues_rocmfpx_fp2_const[ b        & 3u],
+                         kvalues_rocmfpx_fp2_const[(b >> 2u) & 3u],
+                         kvalues_rocmfpx_fp2_const[(b >> 4u) & 3u],
+                         kvalues_rocmfpx_fp2_const[(b >> 6u) & 3u]));
+}
+
+f16vec4 dequantFuncROCMFPXFP2_v(const in decodeBufROCMFPXFP2 bl, const in uint blockCoords[2], const in uint coordInBlock[2])
+{
+    const uint idx = coordInBlock[1];
+    const vec4 q = vec4(unpack8(rocmfpx_cm2_fp2_pack4_window(bl, idx)));
+    const float d = ue4m3_to_fp32(bl.block.e[idx >= 16u ? 1u : 0u]);
+    return f16vec4(q * d);
+}
+#endif
+
 #if defined(DATA_A_ROCMFPX_FP3)
 layout(buffer_reference, std430, buffer_reference_align = 1) buffer decodeBufROCMFPXFP3 {
    block_rocmfpx_fp3 block;
@@ -1511,6 +1547,9 @@ f16vec4 dequantFuncROCMFPXFP8_v(const in decodeBufROCMFPXFP8 bl, const in uint b
 #define dequantFuncA dequantFuncROCMFP4
 #elif defined(DATA_A_ROCMFP4_FAST)
 #define dequantFuncA dequantFuncROCMFP4Fast
+#elif defined(DATA_A_ROCMFPX_FP2)
+#define dequantFuncA dequantFuncROCMFPXFP2
+#define dequantFuncA_v dequantFuncROCMFPXFP2_v
 #elif defined(DATA_A_ROCMFPX_FP3)
 #define dequantFuncA dequantFuncROCMFPXFP3
 #define dequantFuncA_v dequantFuncROCMFPXFP3_v
