@@ -110,9 +110,11 @@ enum llm_arch {
     LLM_ARCH_PLM,
     LLM_ARCH_BAILINGMOE,
     LLM_ARCH_BAILINGMOE2,
+    LLM_ARCH_BAILINGMOE3,
     LLM_ARCH_DOTS1,
     LLM_ARCH_ARCEE,
     LLM_ARCH_AFMOE,
+    LLM_ARCH_LAGUNA,
     LLM_ARCH_ERNIE4_5,
     LLM_ARCH_ERNIE4_5_MOE,
     LLM_ARCH_HUNYUAN_MOE,
@@ -296,6 +298,7 @@ enum llm_kv {
     LLM_KV_SSM_DT_B_C_RMS,
 
     LLM_KV_KDA_HEAD_DIM,
+    LLM_KV_KDA_GATE_LOWER_BOUND,
 
     LLM_KV_WKV_HEAD_SIZE,
 
@@ -472,6 +475,8 @@ enum llm_tensor {
     LLM_TENSOR_SSM_CONV1D_Q,        // kimi: Q conv1d weight
     LLM_TENSOR_SSM_CONV1D_K,        // kimi: K conv1d weight
     LLM_TENSOR_SSM_CONV1D_V,        // kimi: V conv1d weight
+    LLM_TENSOR_SSM_F,               // bailingmoe3: full-rank forget gate projection
+    LLM_TENSOR_SSM_G,               // bailingmoe3: full-rank output gate projection
     LLM_TENSOR_SSM_F_A,             // kimi: forget gate projection A
     LLM_TENSOR_SSM_F_B,             // kimi: forget gate projection B
     LLM_TENSOR_SSM_BETA,            // kimi: beta mixing coefficient and qwen3.5
@@ -558,6 +563,7 @@ enum llm_tensor {
     LLM_TENSOR_ENC_FFN_DOWN,
     LLM_TENSOR_ENC_FFN_UP,
     LLM_TENSOR_ENC_OUTPUT_NORM,
+    LLM_TENSOR_ENC_AUX_NORM,
     LLM_TENSOR_CLS,
     LLM_TENSOR_CLS_OUT,
     LLM_TENSOR_CLS_NORM,
@@ -617,6 +623,9 @@ enum llm_tensor {
     LLM_TENSOR_MASKED_EMBD_ORDERING,
     LLM_TENSOR_FC,
     LLM_TENSOR_D2T,
+    LLM_TENSOR_DSPARK_MARKOV_W1,
+    LLM_TENSOR_DSPARK_MARKOV_W2,
+    LLM_TENSOR_DSPARK_CONF_PROJ,
 };
 
 enum llm_tensor_layer {

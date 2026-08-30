@@ -1358,6 +1358,28 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_CACHE_RAM").set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
+        {"--cache-disk"}, "PATH",
+        "base directory for the automatic SSD-backed prompt cache (default: disabled); "
+        "the server creates and removes an owner-only run directory below PATH",
+        [](common_params & params, const std::string & value) {
+            if (value.empty()) {
+                throw std::invalid_argument("cache disk path must not be empty");
+            }
+            params.cache_disk_path = value;
+        }
+    ).set_env("LLAMA_ARG_CACHE_DISK").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
+        {"--cache-disk-limit"}, "N",
+        string_format("maximum SSD-backed prompt-cache size in MiB when --cache-disk is set "
+            "(default: %d, 0 - disable)", params.cache_disk_limit_mib),
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("cache disk limit must be non-negative");
+            }
+            params.cache_disk_limit_mib = value;
+        }
+    ).set_env("LLAMA_ARG_CACHE_DISK_LIMIT").set_examples({LLAMA_EXAMPLE_SERVER}));
+    add_opt(common_arg(
         {"-kvu", "--kv-unified"},
         {"-no-kvu", "--no-kv-unified"},
         "use single unified KV buffer shared across all sequences (default: enabled if number of slots is auto)",
@@ -1368,7 +1390,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     add_opt(common_arg(
         {"--cache-idle-slots"},
         {"--no-cache-idle-slots"},
-        "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache-ram)",
+        "save idle slots to the prompt cache on new task, and clear them when using unified KV (default: enabled, requires cache RAM or disk)",
         [](common_params & params, bool value) {
             params.cache_idle_slots = value;
         }
@@ -3362,6 +3384,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
     //
 
     add_opt(common_arg(
+        {"--spec-mtp-strict"},
+        {"--no-spec-mtp-strict"},
+        "use single-row target verification for exact greedy HY3 MTP output; may reduce throughput and requires one server slot (auto parallel selects one; default: enabled)",
+        [](common_params & params, bool value) {
+            params.speculative.mtp_strict = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER}).set_env("LLAMA_ARG_SPEC_MTP_STRICT"));
+    add_opt(common_arg(
+        {"--spec-mtp-strict-qwen"},
+        {"--no-spec-mtp-strict-qwen"},
+        "use boundary-safe multi-row verification with bounded recurrent rollback for exact greedy Qwen35/Qwen35MoE MTP output; requires one slot/sequence (default: disabled)",
+        [](common_params & params, bool value) {
+            params.speculative.mtp_strict_qwen = value;
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_MTP_STRICT_QWEN"));
+    add_opt(common_arg(
         {"--spec-draft-hf", "-hfd", "-hfrd", "--hf-repo-draft"}, "<user>/<model>[:quant]",
         "Same as --hf-repo, but for the draft model (default: unused)",
         [](common_params & params, const std::string & value) {
@@ -3534,6 +3572,9 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         {"--spec-draft-n-max"}, "N",
         string_format("number of tokens to draft for speculative decoding (default: %d)", params.speculative.draft.n_max),
         [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
             params.speculative.draft.n_max = value;
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_LOOKUP, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_MAX"));

@@ -237,6 +237,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_bailingmoe(params);
         case LLM_ARCH_BAILINGMOE2:
             return new llama_model_bailingmoe2(params);
+        case LLM_ARCH_BAILINGMOE3:
+            return new llama_model_bailingmoe3(params);
         case LLM_ARCH_SEED_OSS:
             return new llama_model_seed_oss(params);
         case LLM_ARCH_DOTS1:
@@ -245,6 +247,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
             return new llama_model_arcee(params);
         case LLM_ARCH_AFMOE:
             return new llama_model_afmoe(params);
+        case LLM_ARCH_LAGUNA:
+            return new llama_model_laguna(params);
         case LLM_ARCH_ERNIE4_5:
             return new llama_model_ernie4_5(params);
         case LLM_ARCH_ERNIE4_5_MOE:
@@ -786,6 +790,7 @@ const char * llm_type_name(llm_type type) {
         case LLM_TYPE_48B_A3B:       return "48B.A3B";
         case LLM_TYPE_80B_A3B:       return "80B.A3B";
         case LLM_TYPE_100B_A6B:      return "100B.A6B";
+        case LLM_TYPE_124B_A5B:      return "124B.A5B";
         case LLM_TYPE_102B_A12B:     return "102B.A12B";
         case LLM_TYPE_106B_A12B:     return "106B.A12B";
         case LLM_TYPE_120B_A12B:     return "120B.A12B";
@@ -1416,6 +1421,30 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 layer.ssm_beta_in_s = create_tensor(tn(LLM_TENSOR_SSM_BETA, "input_scale", i), {1}, TENSOR_NOT_REQUIRED);
             }
         }
+
+        // lm_head scales. The loop above is per-layer, so the non-layer output
+        // tensor never got its ".scale"/".input_scale" claimed. ModelOpt NVFP4
+        // checkpoints quantize lm_head too (it is one of the 193 W4A16_NVFP4
+        // tensors in the qwen3_5 family recipe), so those two tensors were left
+        // over and load failed with "wrong number of tensors; expected N, got N-2".
+        //
+        // Only ask for them when lm_head is itself a scale-carrying quant. The
+        // request must not be unconditional: callers that synthesize a model
+        // rather than read a file (llama_model_init_from_user, as used by
+        // test-llama-archs) materialize every tensor that is asked for, so an
+        // unconditional request invents a random lm_head scale for models that
+        // have none. That is not harmless - it multiplies the final logits by
+        // a small random scalar, which costs enough relative precision on the
+        // Vulkan and Meta backends to fail the NMSE check on gemma2/gemma3n.
+        // Add further types here if other quants grow lm_head scales.
+        const bool output_has_scales = output && output->type == GGML_TYPE_NVFP4;
+
+        if (!output_s && output_has_scales) {
+            output_s = create_tensor(tn(LLM_TENSOR_OUTPUT, "scale"), {1}, TENSOR_NOT_REQUIRED);
+        }
+        if (!output_in_s && output_has_scales) {
+            output_in_s = create_tensor(tn(LLM_TENSOR_OUTPUT, "input_scale"), {1}, TENSOR_NOT_REQUIRED);
+        }
     }
 
     ml.done_getting_tensors();
@@ -2002,6 +2031,30 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         /* filter_attn       */ std::move(filter_attn),
                         /* filter_recr       */ std::move(filter_recr));
             } break;
+        case LLM_ARCH_DFLASH:
+            {
+                // DSV4 DSpark stages store a single MLA-style K per position (window = the draft ring)
+                if (hparams.n_hc > 1) {
+                    GGML_ASSERT(hparams.swa_type != LLAMA_SWA_TYPE_NONE);
+
+                    res = new llama_kv_cache_iswa(
+                            *this,
+                            params.type_k,
+                            params.type_v,
+                            !cparams.flash_attn,
+                            cparams.offload_kqv,
+                            params.swa_full,
+                            cparams.kv_unified,
+                            cparams.n_ctx_seq,
+                            cparams.n_seq_max,
+                            cparams.n_ubatch,
+                            1,
+                            nullptr,
+                            nullptr);
+                    break;
+                }
+            }
+            [[fallthrough]];
         // Models that need standard caching should rely on recurrent/hybrid
         // checks
         default:
@@ -2010,7 +2063,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                 // attention KV cache for the MTP context instead of the hybrid wrapper.
                 const bool mtp_on_hybrid_qwen35 =
                     params.ctx_type == LLAMA_CONTEXT_TYPE_MTP &&
-                    (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE);
+                    (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_BAILINGMOE3);
                 const bool step35_with_mtp =
                     arch == LLM_ARCH_STEP35 && hparams.nextn_predict_layers > 0;
                 const bool mtp_on_step35 =
@@ -2041,7 +2094,7 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         filter_recr = [&](int32_t il) {
                             return hparams.is_recurrent(il) && hparams.n_ff(il) == 0;
                         };
-                    } else if (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE) {
+                    } else if (arch == LLM_ARCH_QWEN35 || arch == LLM_ARCH_QWEN35MOE || arch == LLM_ARCH_BAILINGMOE3) {
                         const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
                         filter_attn = [&, n_main](int32_t il) {
                             return (uint32_t)il < n_main && !hparams.is_recurrent(il);
@@ -2114,6 +2167,15 @@ llama_memory_i * llama_model::create_memory(const llama_memory_params & params, 
                         filter = [n_main, mtp_on_step35](int32_t il) {
                             return mtp_on_step35 ? (uint32_t)il >= n_main : (uint32_t)il < n_main;
                         };
+                    }
+
+                    if (arch == LLM_ARCH_HYV3 && hparams.nextn_predict_layers > 0) {
+                        const uint32_t n_main = hparams.n_layer - hparams.nextn_predict_layers;
+                        if (params.ctx_type == LLAMA_CONTEXT_TYPE_MTP) {
+                            filter = [n_main](int32_t il) { return (uint32_t) il >= n_main; };
+                        } else {
+                            filter = [n_main](int32_t il) { return (uint32_t) il < n_main; };
+                        }
                     }
 
                     if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
@@ -2352,6 +2414,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_LLAMA_EMBED:
         case LLM_ARCH_MAINCODER:
         case LLM_ARCH_GLM_DSA:
+        case LLM_ARCH_BAILINGMOE3:
             return LLAMA_ROPE_TYPE_NORM;
 
         // the pairs of head values are offset by n_rot/2
@@ -2418,14 +2481,18 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
         case LLM_ARCH_COGVLM:
         case LLM_ARCH_PANGU_EMBED:
         case LLM_ARCH_AFMOE:
+        case LLM_ARCH_LAGUNA:
         case LLM_ARCH_QWEN3NEXT:
         case LLM_ARCH_MIMO2:
         case LLM_ARCH_STEP35:
         case LLM_ARCH_HYV3:
-        case LLM_ARCH_DFLASH:
         case LLM_ARCH_TALKIE:
         case LLM_ARCH_MELLUM:
             return LLAMA_ROPE_TYPE_NEOX;
+
+        case LLM_ARCH_DFLASH:
+            // DSV4 DSpark drafters use DeepSeek-V4's normal RoPE; legacy DFlash backbones are NeoX
+            return model->hparams.n_hc > 1 ? LLAMA_ROPE_TYPE_NORM : LLAMA_ROPE_TYPE_NEOX;
 
         case LLM_ARCH_QWEN2VL:
         case LLM_ARCH_PADDLEOCR:
